@@ -5,9 +5,10 @@
     "setup:hitl": "bash tools/browser-hitl/setup.sh",
     "check:hitl:shell": "bash -n tools/browser-hitl/hitl-lib.sh tools/browser-hitl/hitl-open.sh tools/browser-hitl/hitl-close.sh tools/browser-hitl/hitl-status.sh tools/browser-hitl/hitl-cleanup.sh tools/browser-hitl/setup.sh",
     "check:hitl:node": "node --check tools/browser-hitl/browser-control.mjs",
-    "check:hitl": "npm run check:hitl:shell && npm run check:hitl:node"
+    "check:hitl": "npm run check:hitl:shell && npm run check:hitl:node",
+    "test:hitl": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "playwright": "latest"
+    "playwright-core": "latest"
   }
 }

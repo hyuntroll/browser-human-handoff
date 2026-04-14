@@ -63,6 +63,16 @@ If you want the setup script to attempt dependency installation:
 bash tools/browser-hitl/setup.sh --install-os-deps
 ```
 
+The setup script is designed to help install the required runtime pieces together:
+
+- `bash`
+- `curl`
+- `openssl`
+- `node` / `npm`
+- `xpra`
+- a Chromium-compatible browser
+- the Node CDP client package from `package.json`
+
 ### 2. Configure environment variables
 
 The setup script creates `.env.hitl.local` from `.env.hitl.example`.
@@ -108,6 +118,38 @@ node tools/browser-hitl/browser-control.mjs <session_id> screenshot
 bash tools/browser-hitl/hitl-close.sh <session_id>
 ```
 
+## Test
+
+Run the mock-based smoke tests:
+
+```bash
+npm run test:hitl
+```
+
+These tests do not require a real Xpra or Chromium process. They validate the HITL lifecycle with mocked OS commands:
+
+- session open
+- session status
+- manual close
+- TTL cleanup
+- browser-control guard rails for expired sessions
+
+## Docker Test
+
+There is also a test-oriented Dockerfile for reproducing the environment with the expected system packages installed.
+
+Build the image:
+
+```bash
+docker build -t browser-hitl-test .
+```
+
+Run the smoke tests inside the container:
+
+```bash
+docker run --rm browser-hitl-test
+```
+
 ## Session Lifecycle
 
 The current design uses these states:
@@ -131,9 +173,9 @@ Session metadata is stored under `~/.openclaw-hitl/<session_id>/session.json`.
 
 ## Known Limitations
 
-- macOS Chromium detection is not complete for every installation pattern.
-- `hitl-open.sh` still needs safer escaping for shell-sensitive target URLs.
-- The repository has not been validated end-to-end in this environment because `xpra`, Chromium, and Playwright were not installed here.
+- Some macOS setups may still need `OPENCLAW_CHROMIUM_BIN` set explicitly if Chromium is installed in a nonstandard location.
+- The included smoke tests use mocked OS commands, so a full end-to-end validation with real Xpra and Chromium is still recommended.
+- The Docker test image has not been validated in this environment.
 - Setup and runtime scripts are designed for local prototyping first, not broad distribution yet.
 
 ## Intended Use
