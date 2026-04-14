@@ -80,6 +80,20 @@ async function connectWithRetry(chromium, cdpUrl) {
   throw lastError;
 }
 
+async function loadPlaywrightChromium() {
+  try {
+    return await import("playwright-core");
+  } catch (coreError) {
+    try {
+      return await import("playwright");
+    } catch (playwrightError) {
+      throw new Error(
+        `playwright-core (or playwright) is required to control the handoff browser: ${playwrightError.message}`,
+      );
+    }
+  }
+}
+
 function assertSessionReusable(metadata) {
   if (!metadata.cdp_url) {
     throw new Error("cdp_url is missing from session metadata");
@@ -124,11 +138,9 @@ async function main() {
 
   let chromium;
   try {
-    ({ chromium } = await import("playwright"));
+    ({ chromium } = await loadPlaywrightChromium());
   } catch (error) {
-    throw new Error(
-      `playwright is required to control the handoff browser: ${error.message}`,
-    );
+    throw error;
   }
 
   try {

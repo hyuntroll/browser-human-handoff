@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${SCRIPT_DIR}/hitl-lib.sh"
+
 ENV_EXAMPLE="${ROOT_DIR}/.env.hitl.example"
 ENV_LOCAL="${ROOT_DIR}/.env.hitl.local"
 PACKAGE_JSON="${ROOT_DIR}/package.json"
@@ -35,10 +37,6 @@ have_cmd() {
   command -v "${1}" >/dev/null 2>&1
 }
 
-detect_chromium_bin() {
-  command -v chromium-browser || command -v chromium || command -v google-chrome || true
-}
-
 platform_name() {
   uname -s
 }
@@ -55,24 +53,55 @@ install_os_dependencies() {
         return 1
       fi
 
-      if ! have_cmd xpra; then
-        log "Installing xpra with Homebrew"
-        brew install xpra
+      local formulae=()
+      for formula in bash curl openssl node xpra; do
+        if ! brew list "${formula}" >/dev/null 2>&1; then
+          formulae+=("${formula}")
+        fi
+      done
+
+      if [ "${#formulae[@]}" -gt 0 ]; then
+        log "Installing Homebrew formulae: ${formulae[*]}"
+        brew install "${formulae[@]}"
       fi
 
-      if [ -z "$(detect_chromium_bin)" ]; then
+      if ! detect_chromium_bin >/dev/null 2>&1; then
         log "Installing Chromium with Homebrew"
         brew install --cask chromium
       fi
       ;;
     Linux)
       if have_cmd apt-get; then
-        log "Installing xpra and Chromium with apt-get"
+        log "Installing core dependencies with apt-get"
         sudo apt-get update
-        sudo apt-get install -y xpra chromium-browser
+        sudo apt-get install -y --no-install-recommends \
+          bash \
+          curl \
+          openssl \
+          ca-certificates \
+          nodejs \
+          npm \
+          xpra
+
+        if ! detect_chromium_bin >/dev/null 2>&1; then
+          if apt-cache show chromium >/dev/null 2>&1; then
+            log "Installing Chromium with apt-get"
+            sudo apt-get install -y --no-install-recommends chromium
+          elif apt-cache show chromium-browser >/dev/null 2>&1; then
+            log "Installing chromium-browser with apt-get"
+            sudo apt-get install -y --no-install-recommends chromium-browser
+          else
+            warn "Chromium package was not found in apt repositories."
+            return 1
+          fi
+        fi
       elif have_cmd dnf; then
-        log "Installing xpra and Chromium with dnf"
-        sudo dnf install -y xpra chromium
+        log "Installing core dependencies with dnf"
+        sudo dnf install -y bash curl openssl ca-certificates nodejs npm xpra
+        if ! detect_chromium_bin >/dev/null 2>&1; then
+          log "Installing Chromium with dnf"
+          sudo dnf install -y chromium
+        fi
       else
         warn "Unsupported Linux package manager. Install xpra and Chromium manually."
         return 1
@@ -158,7 +187,11 @@ install_node_dependencies() {
   fi
 
   log "Installing Node dependencies from package.json"
-  npm install --no-fund --no-audit
+  if [ -f "${ROOT_DIR}/package-lock.json" ]; then
+    npm ci --no-fund --no-audit
+  else
+    npm install --no-fund --no-audit
+  fi
 }
 
 print_next_steps() {
@@ -217,13 +250,16 @@ if ! check_required_commands; then
 fi
 
 if [ "${INSTALL_NODE_DEPS}" = "1" ]; then
-  install_node_dependencies || true
+  if ! install_node_dependencies; then
+    warn "Node dependency installation failed."
+    exit 1
+  fi
 fi
 
-if have_cmd npm && [ -d "${ROOT_DIR}/node_modules/playwright" ]; then
-  log "Playwright is installed in node_modules"
+if have_cmd npm && { [ -d "${ROOT_DIR}/node_modules/playwright-core" ] || [ -d "${ROOT_DIR}/node_modules/playwright" ]; }; then
+  log "Playwright client library is installed in node_modules"
 else
-  warn "Playwright is not installed yet. Run npm install after network access is available."
+  warn "Playwright client library is not installed yet. Run npm install after network access is available."
 fi
 
 print_next_steps

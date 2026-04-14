@@ -30,7 +30,7 @@ chmod 700 "${SESSION_DIR}"
 PUBLIC_HOST="${OPENCLAW_PUBLIC_HOST:-127.0.0.1}"
 PUBLIC_SCHEME="${OPENCLAW_PUBLIC_SCHEME:-http}"
 
-CHROMIUM_BIN="$(command -v chromium-browser || command -v chromium || command -v google-chrome || true)"
+CHROMIUM_BIN="$(detect_chromium_bin || true)"
 if [ -z "${CHROMIUM_BIN}" ]; then
   write_value "$(session_file "${SESSION_DIR}" status)" "FAILED"
   write_value "$(session_file "${SESSION_DIR}" created_at)" "${CREATED_AT}"
@@ -60,17 +60,18 @@ write_value "$(session_file "${SESSION_DIR}" ttl_seconds)" "${TTL_SECONDS}"
 write_value "$(session_file "${SESSION_DIR}" last_action)" "opening"
 write_session_metadata "${SESSION_DIR}"
 
-CHROMIUM_CMD="${CHROMIUM_BIN} \
-  --no-sandbox \
-  --disable-dev-shm-usage \
-  --user-data-dir=${SESSION_DIR}/profile \
-  --no-first-run \
-  --no-default-browser-check \
-  --new-window \
-  --start-maximized \
-  --remote-debugging-address=127.0.0.1 \
-  --remote-debugging-port=${CDP_PORT} \
-  ${TARGET_URL}"
+CHROMIUM_CMD="$(shell_join \
+  "${CHROMIUM_BIN}" \
+  "--no-sandbox" \
+  "--disable-dev-shm-usage" \
+  "--user-data-dir=${SESSION_DIR}/profile" \
+  "--no-first-run" \
+  "--no-default-browser-check" \
+  "--new-window" \
+  "--start-maximized" \
+  "--remote-debugging-address=127.0.0.1" \
+  "--remote-debugging-port=${CDP_PORT}" \
+  "${TARGET_URL}")"
 
 if ! xpra start "${DISPLAY}" \
   --bind-tcp=0.0.0.0:${PORT} \

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HITL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="${OPENCLAW_HITL_BASE_DIR:-${HOME}/.openclaw-hitl}"
 
 ensure_base_dir() {
@@ -44,6 +44,47 @@ random_in_range() {
 
   random_num="$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
   printf '%s\n' "$((min + (random_num % span)))"
+}
+
+detect_chromium_bin() {
+  local candidate
+
+  if [ -n "${OPENCLAW_CHROMIUM_BIN:-}" ] && [ -x "${OPENCLAW_CHROMIUM_BIN}" ]; then
+    printf '%s\n' "${OPENCLAW_CHROMIUM_BIN}"
+    return 0
+  fi
+
+  for candidate in \
+    "$(command -v chromium-browser 2>/dev/null || true)" \
+    "$(command -v chromium 2>/dev/null || true)" \
+    "$(command -v google-chrome 2>/dev/null || true)" \
+    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    "/usr/bin/chromium-browser" \
+    "/usr/bin/chromium" \
+    "/opt/homebrew/bin/chromium" \
+    "/opt/homebrew/bin/chromium-browser"
+  do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+shell_join() {
+  local arg quoted
+  local escaped=()
+
+  for arg in "$@"; do
+    printf -v quoted '%q' "${arg}"
+    escaped+=("${quoted}")
+  done
+
+  local IFS=' '
+  printf '%s' "${escaped[*]}"
 }
 
 json_escape() {
