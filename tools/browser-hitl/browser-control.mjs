@@ -5,8 +5,8 @@ import path from "node:path";
 import process from "node:process";
 
 const baseDir =
-  process.env.OPENCLAW_HITL_BASE_DIR ??
-  path.join(process.env.HOME ?? "", ".openclaw-hitl");
+  process.env.BROWSER_HANDOFF_BASE_DIR ??
+  path.join(process.env.HOME ?? "", ".hermes/browser-handoff");
 
 const [sessionId, action, ...args] = process.argv.slice(2);
 

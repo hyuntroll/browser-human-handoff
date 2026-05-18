@@ -70,9 +70,10 @@ The setup script creates `.env.hitl.local` from `.env.hitl.example`.
 Example values:
 
 ```bash
-OPENCLAW_PUBLIC_HOST=127.0.0.1
-OPENCLAW_PUBLIC_SCHEME=http
-OPENCLAW_HITL_TTL_SECONDS=900
+BROWSER_HANDOFF_PUBLIC_HOST=127.0.0.1
+BROWSER_HANDOFF_PUBLIC_SCHEME=http
+BROWSER_HANDOFF_BIND_HOST=127.0.0.1
+BROWSER_HANDOFF_TTL_SECONDS=900
 ```
 
 Load them before running the tools:
@@ -120,7 +121,7 @@ The current design uses these states:
 - `EXPIRED`
 - `FAILED`
 
-Session metadata is stored under `~/.openclaw-hitl/<session_id>/session.json`.
+Session metadata is stored under `~/.hermes/browser-handoff/<session_id>/session.json`.
 
 ## Security Notes
 

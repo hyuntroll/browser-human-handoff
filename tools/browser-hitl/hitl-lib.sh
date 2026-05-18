@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="${OPENCLAW_HITL_BASE_DIR:-${HOME}/.openclaw-hitl}"
+BASE_DIR="${BROWSER_HANDOFF_BASE_DIR:-${HOME}/.hermes/browser-handoff}"
 
 ensure_base_dir() {
   mkdir -p "${BASE_DIR}"
@@ -86,6 +86,22 @@ status_is_terminal() {
   esac
 }
 
+terminate_chromium_child() {
+  local session_dir="${1:?session dir required}"
+  local chromium_pid
+  chromium_pid="$(read_optional_file "$(session_file "${session_dir}" chromium_pid)")"
+
+  if [ -n "${chromium_pid}" ] && printf '%s' "${chromium_pid}" | grep -Eq '^[0-9]+$'; then
+    if kill -0 "${chromium_pid}" >/dev/null 2>&1; then
+      kill "${chromium_pid}" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "${chromium_pid}" >/dev/null 2>&1; then
+        kill -9 "${chromium_pid}" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+}
+
 write_session_metadata() {
   local session_dir="${1:?session dir required}"
   local session_id
@@ -93,7 +109,8 @@ write_session_metadata() {
 
   local status display xpra_port cdp_port target_url xpra_url cdp_url
   local created_at expires_at ttl_seconds closed_at last_action last_url
-  local last_screenshot closed_reason
+  local last_screenshot closed_reason chromium_pid xpra_password xpra_password_file
+  local bind_host public_host public_scheme
 
   status="$(read_optional_file "$(session_file "${session_dir}" status)")"
   display="$(read_optional_file "$(session_file "${session_dir}" display)")"
@@ -110,6 +127,12 @@ write_session_metadata() {
   last_url="$(read_optional_file "$(session_file "${session_dir}" last_url)")"
   last_screenshot="$(read_optional_file "$(session_file "${session_dir}" last_screenshot)")"
   closed_reason="$(read_optional_file "$(session_file "${session_dir}" closed_reason)")"
+  chromium_pid="$(read_optional_file "$(session_file "${session_dir}" chromium_pid)")"
+  xpra_password="$(read_optional_file "$(session_file "${session_dir}" xpra_password)")"
+  xpra_password_file="$(read_optional_file "$(session_file "${session_dir}" xpra_password_file)")"
+  bind_host="$(read_optional_file "$(session_file "${session_dir}" bind_host)")"
+  public_host="$(read_optional_file "$(session_file "${session_dir}" public_host)")"
+  public_scheme="$(read_optional_file "$(session_file "${session_dir}" public_scheme)")"
 
   cat > "$(session_file "${session_dir}" session.json)" <<JSON
 {
@@ -121,10 +144,16 @@ write_session_metadata() {
   "ttl_seconds": $(json_number_or_null "${ttl_seconds}"),
   "target_url": $(json_string_or_null "${target_url}"),
   "xpra_url": $(json_string_or_null "${xpra_url}"),
+  "xpra_password": $(json_string_or_null "${xpra_password}"),
+  "xpra_password_file": $(json_string_or_null "${xpra_password_file}"),
   "cdp_url": $(json_string_or_null "${cdp_url}"),
   "display": $(json_string_or_null "${display}"),
+  "bind_host": $(json_string_or_null "${bind_host}"),
+  "public_host": $(json_string_or_null "${public_host}"),
+  "public_scheme": $(json_string_or_null "${public_scheme}"),
   "xpra_port": $(json_number_or_null "${xpra_port}"),
   "cdp_port": $(json_number_or_null "${cdp_port}"),
+  "chromium_pid": $(json_number_or_null "${chromium_pid}"),
   "last_action": $(json_string_or_null "${last_action}"),
   "last_url": $(json_string_or_null "${last_url}"),
   "last_screenshot": $(json_string_or_null "${last_screenshot}"),

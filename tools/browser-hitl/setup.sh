@@ -165,7 +165,7 @@ print_next_steps() {
   cat <<EOF
 
 Next steps
-1. Edit ${ENV_LOCAL} and set OPENCLAW_PUBLIC_HOST for your reachable host or IP.
+1. Edit ${ENV_LOCAL} and set BROWSER_HANDOFF_PUBLIC_HOST for your reachable host or IP.
 2. Load the environment before running HITL tools:
    set -a; source ${ENV_LOCAL}; set +a
 3. Open a test session:

@@ -26,6 +26,12 @@ for SESSION_DIR in "${BASE_DIR}"/*; do
     continue
   fi
 
+  CHROMIUM_PID="$(read_optional_file "$(session_file "${SESSION_DIR}" chromium_pid)")"
+  if [ -n "${CHROMIUM_PID}" ]; then
+    kill "${CHROMIUM_PID}" >/dev/null 2>&1 || true
+  fi
+  terminate_chromium_child "${SESSION_DIR}"
+
   DISPLAY_VAL="$(read_optional_file "$(session_file "${SESSION_DIR}" display)")"
   if [ -n "${DISPLAY_VAL}" ]; then
     xpra stop "${DISPLAY_VAL}" >/dev/null 2>&1 || true
