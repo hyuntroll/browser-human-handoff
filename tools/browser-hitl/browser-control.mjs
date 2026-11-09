@@ -3,254 +3,260 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import {
+  CliError,
+  REUSABLE_STATUSES,
+  TERMINAL_STATUSES,
+  ensureDir,
+  getPaths,
+  getSessionPaths,
+  loadSession,
+  mainError,
+  nowEpoch,
+  parsePositiveInteger,
+  pathExists,
+  pidAlive,
+  printJson,
+  readJson,
+  readSecureJsonInput,
+  updateSession,
+  waitForAgentLock,
+  withCdpPage,
+  withFileLock,
+} from "./hitl-lib.mjs";
 
-const baseDir =
-  process.env.BROWSER_HANDOFF_BASE_DIR ??
-  path.join(process.env.HOME ?? "", ".hermes/browser-handoff");
+const ACTIONS = new Set([
+  "url",
+  "title",
+  "goto",
+  "screenshot",
+  "click",
+  "fill",
+  "press",
+  "content",
+  "cookies",
+]);
 
-const [sessionId, action, ...args] = process.argv.slice(2);
-
-if (!sessionId || !action) {
-  console.error(
-    "usage: node tools/browser-hitl/browser-control.mjs <session_id> <action> [args...]",
+function usage() {
+  return new CliError(
+    "usage: browser-control.mjs <action> [args...] or <session_id> <action> [args...]",
+    64,
   );
-  process.exit(1);
 }
 
-const sessionDir = path.join(baseDir, sessionId);
-const metadataPath = path.join(sessionDir, "session.json");
-
-function nowEpoch() {
-  return Math.floor(Date.now() / 1000);
-}
-
-async function fileExists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
+function parseFillInput(args) {
+  let source = null;
+  let keepFile = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--keep-file") {
+      keepFile = true;
+      continue;
+    }
+    let selected;
+    if (argument === "--stdin") {
+      selected = { kind: "stdin" };
+    } else if (argument === "--fd" || argument === "--file") {
+      const value = args[index + 1];
+      if (value === undefined) throw new CliError(`${argument} requires a value`, 64);
+      index += 1;
+      selected =
+        argument === "--fd"
+          ? {
+              kind: "fd",
+              fd: parsePositiveInteger(value, "--fd", {
+                allowZero: true,
+                maximum: 1024,
+              }),
+            }
+          : { kind: "file", filePath: value };
+    } else {
+      throw new CliError(
+        "fill values must come from --stdin, --fd, or --file as {\"value\":...}",
+        64,
+      );
+    }
+    if (source) throw new CliError("choose exactly one secure input source", 64);
+    source = selected;
   }
-}
-
-async function loadMetadata() {
-  if (!(await fileExists(metadataPath))) {
-    throw new Error(`session metadata not found: ${sessionId}`);
+  if (!source) throw new CliError("choose exactly one secure input source", 64);
+  if (keepFile && source.kind !== "file") {
+    throw new CliError("--keep-file is valid only with --file", 64);
   }
-
-  const raw = await fs.readFile(metadataPath, "utf8");
-  return JSON.parse(raw);
+  return { ...source, keepFile };
 }
 
-async function writeMetadata(metadata) {
-  await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
-}
-
-async function updateMetadata(mutator) {
-  const metadata = await loadMetadata();
-  mutator(metadata);
-  await writeMetadata(metadata);
-  return metadata;
-}
-
-async function ensureArtifactsDir() {
-  const artifactsDir = path.join(sessionDir, "artifacts");
-  await fs.mkdir(artifactsDir, { recursive: true });
-  return artifactsDir;
-}
-
-function requireArg(index, label) {
+function requireArgument(args, index, label) {
   const value = args[index];
-  if (!value) {
-    throw new Error(`${label} is required for the ${action} action`);
+  if (value === undefined || value === "") {
+    throw new CliError(`${label} is required`, 64);
   }
   return value;
 }
 
-async function connectWithRetry(chromium, cdpUrl) {
-  let lastError;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      return await chromium.connectOverCDP(cdpUrl);
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+async function resolveInvocation() {
+  let [action, ...args] = process.argv.slice(2);
+  if (!action) throw usage();
+  let sessionId = null;
+
+  try {
+    const candidate = getSessionPaths(action);
+    if (await pathExists(candidate.metadata)) {
+      sessionId = action;
+      action = args.shift();
     }
+  } catch {
+    // Action-first invocation does not name a session.
   }
-  throw lastError;
+
+  if (!action || !ACTIONS.has(action)) throw usage();
+  return { sessionId, action, args };
 }
 
-function assertSessionReusable(metadata) {
-  if (!metadata.cdp_url) {
-    throw new Error("cdp_url is missing from session metadata");
+async function validateLegacySession(sessionId) {
+  if (!sessionId) return null;
+  const session = await loadSession(sessionId);
+  if (TERMINAL_STATUSES.has(session.status)) {
+    throw new Error(`handoff session is not reusable: ${session.status}`);
   }
-
-  if (metadata.expires_at && nowEpoch() >= metadata.expires_at) {
-    throw new Error("handoff session has expired");
+  if (!REUSABLE_STATUSES.has(session.status)) {
+    throw new Error(`handoff session is not resumable: ${session.status}`);
   }
-
-  if (["CLOSED", "EXPIRED", "FAILED"].includes(metadata.status)) {
-    throw new Error(`handoff session is not reusable: ${metadata.status}`);
+  if (session.cdp_http !== (await readJson(getPaths().endpoint))?.cdp_http) {
+    throw new Error("session and persistent browser endpoints do not match");
   }
+  return session;
 }
 
-function activePageFrom(browser) {
-  const contexts = browser.contexts();
-  if (contexts.length === 0) {
-    throw new Error("no browser context is available for this session");
+async function screenshotPath(sessionId, requested) {
+  if (requested) {
+    const target = path.resolve(requested);
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    return target;
+  }
+  const directory = sessionId
+    ? getSessionPaths(sessionId).artifacts
+    : path.join(getPaths().browser, "artifacts");
+  await ensureDir(directory);
+  return path.join(directory, `screenshot-${Date.now()}.png`);
+}
+
+async function performAction({ sessionId, action, args, fillValue }) {
+  const endpoint = await readJson(getPaths().endpoint);
+  if (!endpoint || !pidAlive(endpoint.chromium_pid)) {
+    throw new Error("persistent browser is not running; run hitl-browser.mjs ensure");
   }
 
-  const context = contexts[0];
-  const pages = context.pages();
-  if (pages.length === 0) {
-    throw new Error("no browser page is available for this session");
+  const output = await withCdpPage(endpoint.cdp_http, async (page, browser) => {
+    switch (action) {
+      case "url":
+        if (args.length) throw usage();
+        return { value: page.url() };
+      case "title":
+        if (args.length) throw usage();
+        return { value: await page.title() };
+      case "goto": {
+        const target = requireArgument(args, 0, "target URL");
+        if (args.length !== 1) throw usage();
+        await page.goto(target, { waitUntil: "domcontentloaded" });
+        return { value: page.url() };
+      }
+      case "screenshot": {
+        if (args.length > 1) throw usage();
+        const target = await screenshotPath(sessionId, args[0]);
+        await page.screenshot({ path: target, fullPage: true });
+        await fs.chmod(target, 0o600);
+        return { path: target };
+      }
+      case "click": {
+        const selector = requireArgument(args, 0, "selector");
+        if (args.length !== 1) throw usage();
+        await page.click(selector);
+        return { selector };
+      }
+      case "fill": {
+        const selector = requireArgument(args, 0, "selector");
+        if (args.length < 2) {
+          throw new CliError("fill requires a selector and a secure input source", 64);
+        }
+        try {
+          await page.fill(selector, fillValue);
+        } catch {
+          throw new Error("fill action failed");
+        }
+        return { selector, filled: true };
+      }
+      case "press": {
+        const key = requireArgument(args, 0, "key");
+        if (args.length !== 1) throw usage();
+        await page.keyboard.press(key);
+        return { key };
+      }
+      case "content":
+        if (args.length) throw usage();
+        return { value: await page.content() };
+      case "cookies": {
+        if (args.length) throw usage();
+        const context = browser.contexts()[0];
+        const cookies = await context.cookies();
+        return {
+          cookies: cookies.map((cookie) => ({
+            name: cookie.name,
+            domain: cookie.domain,
+          })),
+        };
+      }
+      default:
+        throw usage();
+    }
+  });
+
+  if (sessionId) {
+    await updateSession(sessionId, (session) => {
+      if (REUSABLE_STATUSES.has(session.status)) {
+        session.status = "RESUMED";
+        session.last_action = action;
+        session.last_url = output.value && action !== "content" ? output.value : undefined;
+        if (action === "screenshot") session.last_screenshot = output.path;
+      }
+    });
   }
 
-  return pages[pages.length - 1];
+  return {
+    ...(sessionId ? { session_id: sessionId } : {}),
+    action,
+    ...(sessionId ? { status: "RESUMED" } : {}),
+    ...output,
+  };
 }
 
 async function main() {
-  let browser;
-  let page;
-  let metadata = await loadMetadata();
+  const invocation = await resolveInvocation();
+  const { sessionId, action, args } = invocation;
+  await validateLegacySession(sessionId);
 
-  assertSessionReusable(metadata);
-
-  if (metadata.status === "WAITING_FOR_USER") {
-    metadata.status = "RESUMABLE";
-    metadata.last_action = "user_completed";
-    await writeMetadata(metadata);
-  }
-
-  let chromium;
-  try {
-    ({ chromium } = await import("playwright"));
-  } catch (error) {
-    throw new Error(
-      `playwright is required to control the handoff browser: ${error.message}`,
-    );
-  }
-
-  try {
-    browser = await connectWithRetry(chromium, metadata.cdp_url);
-  } catch (error) {
-    await updateMetadata((current) => {
-      current.status = "FAILED";
-      current.closed_reason = "cdp_connect_failed";
-      current.last_action = "cdp_connect_failed";
-    });
-    throw error;
-  }
-
-  try {
-    page = activePageFrom(browser);
-    page.setDefaultTimeout(10000);
-
-    metadata = await updateMetadata((current) => {
-      current.status = "RESUMED";
-      current.last_action = action;
-      current.last_url = page.url();
-    });
-
-    let output;
-    switch (action) {
-      case "url":
-        output = { value: page.url() };
-        break;
-      case "title":
-        output = { value: await page.title() };
-        break;
-      case "goto": {
-        const targetUrl = requireArg(0, "target URL");
-        await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-        output = { value: page.url() };
-        break;
-      }
-      case "screenshot": {
-        const artifactsDir = await ensureArtifactsDir();
-        const targetPath =
-          args[0] ?? path.join(artifactsDir, `screenshot-${Date.now()}.png`);
-        await page.screenshot({ path: targetPath, fullPage: true });
-        output = { path: targetPath };
-        metadata = await updateMetadata((current) => {
-          current.last_screenshot = targetPath;
-          current.last_url = page.url();
-          current.last_action = "screenshot";
-        });
-        break;
-      }
-      case "click": {
-        const selector = requireArg(0, "selector");
-        await page.click(selector);
-        output = { selector };
-        break;
-      }
-      case "fill": {
-        const selector = requireArg(0, "selector");
-        const value = requireArg(1, "value");
-        await page.fill(selector, value);
-        output = { selector, filled: true };
-        break;
-      }
-      case "press": {
-        const key = requireArg(0, "key");
-        await page.keyboard.press(key);
-        output = { key };
-        break;
-      }
-      case "content":
-        output = { value: await page.content() };
-        break;
-      default:
-        throw new Error(`unsupported action: ${action}`);
+  if (action === "fill") {
+    const source = parseFillInput(args.slice(1));
+    const input = await readSecureJsonInput(source);
+    if (typeof input.value !== "string") {
+      throw new CliError("secure fill input must contain a string value", 64);
     }
-
-    metadata = await updateMetadata((current) => {
-      current.status = "RESUMED";
-      current.last_action = action;
-      current.last_url = page.url();
-    });
-
-    console.log(
-      JSON.stringify(
-        {
-          session_id: sessionId,
-          action,
-          status: metadata.status,
-          ...output,
-        },
-        null,
-        2,
-      ),
-    );
-  } catch (error) {
-    let errorScreenshot = null;
-
-    if (page) {
-      try {
-        const artifactsDir = await ensureArtifactsDir();
-        errorScreenshot = path.join(artifactsDir, `error-${Date.now()}.png`);
-        await page.screenshot({ path: errorScreenshot, fullPage: true });
-      } catch {
-        errorScreenshot = null;
-      }
-    }
-
-    await updateMetadata((current) => {
-      current.last_action = `${action}_failed`;
-      current.last_url = page ? page.url() : current.last_url;
-      if (errorScreenshot) {
-        current.last_screenshot = errorScreenshot;
-      }
-    });
-
-    throw error;
-  } finally {
-    await browser?.close().catch(() => {});
+    invocation.fillValue = input.value;
   }
+
+  const waitSeconds = parsePositiveInteger(
+    process.env.BROWSER_HANDOFF_LOCK_WAIT_SECONDS ?? "0",
+    "BROWSER_HANDOFF_LOCK_WAIT_SECONDS",
+    { allowZero: true },
+  );
+  await waitForAgentLock(waitSeconds);
+
+  const output = await withFileLock(getPaths().operationLock, async () => {
+    await waitForAgentLock(0);
+    await validateLegacySession(sessionId);
+    return performAction(invocation);
+  });
+  printJson({ ...output, completed_at: nowEpoch() });
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-});
+main().catch(mainError);

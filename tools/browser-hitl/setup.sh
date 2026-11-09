@@ -36,7 +36,11 @@ have_cmd() {
 }
 
 detect_chromium_bin() {
-  command -v chromium-browser || command -v chromium || command -v google-chrome || true
+  if [ -n "${BROWSER_HANDOFF_CHROMIUM_BIN:-}" ] && [ -x "${BROWSER_HANDOFF_CHROMIUM_BIN}" ]; then
+    printf '%s\n' "${BROWSER_HANDOFF_CHROMIUM_BIN}"
+    return
+  fi
+  command -v chromium-browser || command -v chromium || command -v google-chrome || command -v google-chrome-stable || true
 }
 
 platform_name() {
@@ -67,9 +71,11 @@ install_os_dependencies() {
       ;;
     Linux)
       if have_cmd apt-get; then
-        log "Installing xpra and Chromium with apt-get"
+        log "Debian trixie: configure the xpra.org apt repository before installing Xpra."
+        log "Required Xpra packages: xpra xpra-html5 xpra-x11"
+        log "Installing Xpra, its HTML5/X11 components, and Chromium with apt-get"
         sudo apt-get update
-        sudo apt-get install -y xpra chromium-browser
+        sudo apt-get install -y xpra xpra-html5 xpra-x11 chromium
       elif have_cmd dnf; then
         log "Installing xpra and Chromium with dnf"
         sudo dnf install -y xpra chromium
@@ -88,7 +94,7 @@ install_os_dependencies() {
 check_required_commands() {
   local missing=0
 
-  for cmd in bash curl openssl od tr node; do
+  for cmd in bash node; do
     if have_cmd "${cmd}"; then
       log "Found ${cmd}: $(command -v "${cmd}")"
     else
@@ -96,6 +102,15 @@ check_required_commands() {
       missing=1
     fi
   done
+
+  if have_cmd node; then
+    local node_major
+    node_major="$(node -p 'process.versions.node.split(".")[0]')"
+    if [ "${node_major}" -lt 20 ]; then
+      warn "Node 20 or newer is required; found $(node --version)."
+      missing=1
+    fi
+  fi
 
   if have_cmd npm; then
     log "Found npm: $(command -v npm)"
@@ -142,7 +157,12 @@ ensure_permissions() {
     "${SCRIPT_DIR}/hitl-close.sh" \
     "${SCRIPT_DIR}/hitl-status.sh" \
     "${SCRIPT_DIR}/hitl-cleanup.sh" \
-    "${SCRIPT_DIR}/browser-control.mjs"
+    "${SCRIPT_DIR}/browser-control.mjs" \
+    "${SCRIPT_DIR}/hitl-lib.mjs" \
+    "${SCRIPT_DIR}/hitl-browser.mjs" \
+    "${SCRIPT_DIR}/hitl-handoff.mjs" \
+    "${SCRIPT_DIR}/hitl-gateway.mjs" \
+    "${SCRIPT_DIR}/hitl-watcher.mjs"
   log "Ensured executable permissions on browser HITL scripts"
 }
 
@@ -200,7 +220,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-log "Preparing browser human handoff v2.1 in ${ROOT_DIR}"
+log "Preparing persistent browser human handoff v3 in ${ROOT_DIR}"
 
 ensure_permissions
 ensure_env_file
